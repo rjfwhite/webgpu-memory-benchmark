@@ -59,8 +59,27 @@ class WebGPUMemoryBenchmark {
             this.log(`   Max Storage Buffer Binding Size: ${this.formatBytes(limits.maxStorageBufferBindingSize)}`, 'info');
             this.log(`   Max Texture Dimension 2D: ${limits.maxTextureDimension2D}px`, 'info');
             
+            // Log adapter info for debugging (if available)
+            try {
+                if (this.adapter.requestAdapterInfo) {
+                    const adapterInfo = await this.adapter.requestAdapterInfo();
+                    this.log(`🖥️ GPU: ${adapterInfo.device || 'Unknown'}`, 'info');
+                    this.log(`🏗️ Vendor: ${adapterInfo.vendor || 'Unknown'}`, 'info');
+                } else {
+                    this.log('🖥️ GPU info not available in this browser', 'info');
+                }
+            } catch (error) {
+                this.log('🖥️ GPU info not accessible', 'info');
+            }
+            
             this.statusElement.textContent = 'WebGPU ready for testing';
             this.statusElement.className = 'status success';
+            
+            // Add iOS Safari specific warnings
+            if (this.isIOSSafari()) {
+                this.log('📱 iOS Safari detected - expect memory limits around 200-800MB', 'warning');
+                this.log('⚠️ Tab may crash when limit is exceeded', 'warning');
+            }
             
             this.startButton.disabled = false;
             this.stressButton.disabled = false;
@@ -108,6 +127,14 @@ class WebGPUMemoryBenchmark {
         } catch (error) {
             this.log(`💥 Memory allocation failed: ${error.message}`, 'error');
             this.log('🎯 This might indicate the memory limit!', 'warning');
+            this.log(`📊 Final memory before crash: ${this.formatBytes(this.allocatedMemory)}`, 'warning');
+            
+            // Try to detect if this was an out-of-memory error
+            if (error.message.toLowerCase().includes('memory') || 
+                error.message.toLowerCase().includes('allocation') ||
+                error.message.toLowerCase().includes('resource')) {
+                this.log('💀 OUT OF MEMORY ERROR DETECTED! This is the limit!', 'error');
+            }
         }
         
         this.stopTest();
@@ -147,6 +174,14 @@ class WebGPUMemoryBenchmark {
         } catch (error) {
             this.log(`💥 Stress test triggered error: ${error.message}`, 'error');
             this.log('🎯 This is likely the memory limit!', 'warning');
+            this.log(`📊 Final memory before crash: ${this.formatBytes(this.allocatedMemory)}`, 'warning');
+            
+            // Try to detect if this was an out-of-memory error
+            if (error.message.toLowerCase().includes('memory') || 
+                error.message.toLowerCase().includes('allocation') ||
+                error.message.toLowerCase().includes('resource')) {
+                this.log('💀 OUT OF MEMORY ERROR DETECTED! This is the limit!', 'error');
+            }
         }
         
         this.stopTest();
@@ -160,14 +195,41 @@ class WebGPUMemoryBenchmark {
                 mappedAtCreation: false
             });
             
+            // Force actual memory allocation by writing data to the buffer
+            // Ensure size is aligned to 4 bytes for WebGPU requirements
+            const alignedSize = Math.floor(size / 4) * 4;
+            const data = new Uint8Array(alignedSize);
+            
+            // Fill with random data to prevent compression optimizations
+            for (let i = 0; i < Math.min(alignedSize, 1024 * 1024); i += 4) {
+                // Write 4 bytes at a time for better performance
+                const value = Math.floor(Math.random() * 4294967295); // Random 32-bit value
+                data[i] = value & 0xFF;
+                data[i + 1] = (value >> 8) & 0xFF;
+                data[i + 2] = (value >> 16) & 0xFF;
+                data[i + 3] = (value >> 24) & 0xFF;
+            }
+            
+            this.device.queue.writeBuffer(buffer, 0, data);
+            
+            // Submit the commands and wait for completion to ensure memory is allocated
+            const commandEncoder = this.device.createCommandEncoder();
+            this.device.queue.submit([commandEncoder.finish()]);
+            
+            // Additional stress test with compute shader to ensure memory is really used
+            await this.stressBufferMemory(buffer, size);
+            
             this.buffers.push(buffer);
             this.allocatedMemory += size;
             this.updateMetrics();
             
-            this.log(`📦 Allocated buffer: ${this.formatBytes(size)} (Total: ${this.formatBytes(this.allocatedMemory)})`, 'info');
+            this.log(`📦 Allocated & stressed buffer: ${this.formatBytes(size)} (Total: ${this.formatBytes(this.allocatedMemory)})`, 'info');
             
             return buffer;
         } catch (error) {
+            // Log additional context for debugging
+            this.log(`🚨 Buffer allocation failed at ${this.formatBytes(this.allocatedMemory)} total`, 'error');
+            this.log(`🔍 Error details: ${error.message}`, 'error');
             throw new Error(`Buffer allocation failed: ${error.message}`);
         }
     }
@@ -180,15 +242,42 @@ class WebGPUMemoryBenchmark {
                 usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
             });
             
-            this.textures.push(texture);
+            // Force actual memory allocation by writing data to the texture
             const textureSize = width * height * 4; // RGBA = 4 bytes per pixel
+            const data = new Uint8Array(textureSize);
+            
+            // Fill with random data to prevent compression optimizations
+            // Texture data is already aligned (width * height * 4 bytes)
+            for (let i = 0; i < Math.min(textureSize, 1024 * 1024); i += 4) {
+                // Write RGBA pixels with random values
+                data[i] = Math.floor(Math.random() * 256);     // R
+                data[i + 1] = Math.floor(Math.random() * 256); // G
+                data[i + 2] = Math.floor(Math.random() * 256); // B
+                data[i + 3] = 255; // A (full alpha)
+            }
+            
+            this.device.queue.writeTexture(
+                { texture: texture },
+                data,
+                { bytesPerRow: width * 4, rowsPerImage: height },
+                { width, height, depthOrArrayLayers: 1 }
+            );
+            
+            // Submit the commands to ensure memory is allocated
+            const commandEncoder = this.device.createCommandEncoder();
+            this.device.queue.submit([commandEncoder.finish()]);
+            
+            this.textures.push(texture);
             this.allocatedMemory += textureSize;
             this.updateMetrics();
             
-            this.log(`🖼️ Allocated texture: ${width}x${height} (${this.formatBytes(textureSize)})`, 'info');
+            this.log(`🖼️ Allocated & filled texture: ${width}x${height} (${this.formatBytes(textureSize)})`, 'info');
             
             return texture;
         } catch (error) {
+            // Log additional context for debugging
+            this.log(`🚨 Texture allocation failed at ${this.formatBytes(this.allocatedMemory)} total`, 'error');
+            this.log(`🔍 Error details: ${error.message}`, 'error');
             throw new Error(`Texture allocation failed: ${error.message}`);
         }
     }
@@ -269,6 +358,85 @@ class WebGPUMemoryBenchmark {
 
     clearLog() {
         this.logElement.innerHTML = '';
+    }
+
+    // Detect if running on iOS Safari
+    isIOSSafari() {
+        const userAgent = navigator.userAgent;
+        return /iPad|iPhone|iPod/.test(userAgent) && /Safari/.test(userAgent) && !/Chrome/.test(userAgent);
+    }
+
+    // Add a method to create a compute shader that uses memory
+    async createMemoryStressingComputeShader() {
+        const shaderCode = `
+            @group(0) @binding(0) var<storage, read_write> data: array<f32>;
+            
+            @compute @workgroup_size(64)
+            fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+                let index = global_id.x;
+                if (index >= arrayLength(&data)) {
+                    return;
+                }
+                // Write and read to ensure memory is actually used
+                data[index] = f32(index) * 1.23456789;
+                data[index] = data[index] + 1.0;
+            }
+        `;
+
+        const computeShader = this.device.createShaderModule({
+            code: shaderCode
+        });
+
+        return computeShader;
+    }
+
+    // Add a method to run compute operations on buffers to stress memory
+    async stressBufferMemory(buffer, size) {
+        try {
+            const computeShader = await this.createMemoryStressingComputeShader();
+            
+            const bindGroupLayout = this.device.createBindGroupLayout({
+                entries: [{
+                    binding: 0,
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: { type: 'storage' }
+                }]
+            });
+
+            const computePipeline = this.device.createComputePipeline({
+                layout: this.device.createPipelineLayout({
+                    bindGroupLayouts: [bindGroupLayout]
+                }),
+                compute: {
+                    module: computeShader,
+                    entryPoint: 'main'
+                }
+            });
+
+            const bindGroup = this.device.createBindGroup({
+                layout: bindGroupLayout,
+                entries: [{
+                    binding: 0,
+                    resource: { buffer: buffer }
+                }]
+            });
+
+            const commandEncoder = this.device.createCommandEncoder();
+            const passEncoder = commandEncoder.beginComputePass();
+            passEncoder.setPipeline(computePipeline);
+            passEncoder.setBindGroup(0, bindGroup);
+            
+            // Dispatch enough workgroups to cover the buffer
+            const workgroupSize = 64;
+            const numElements = size / 4; // f32 = 4 bytes
+            const numWorkgroups = Math.ceil(numElements / workgroupSize);
+            passEncoder.dispatchWorkgroups(numWorkgroups);
+            passEncoder.end();
+
+            this.device.queue.submit([commandEncoder.finish()]);
+        } catch (error) {
+            this.log(`⚠️ Compute stress test failed: ${error.message}`, 'warning');
+        }
     }
 }
 
