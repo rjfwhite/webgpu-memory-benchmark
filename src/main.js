@@ -9,6 +9,14 @@ class WebGPUMemoryBenchmark {
         this.startTime = null;
         this.lastAllocationTime = null;
         
+        // Rendering properties
+        this.canvas = null;
+        this.context = null;
+        this.renderPipeline = null;
+        this.sampler = null;
+        this.currentTextureIndex = 0;
+        this.renderInterval = null;
+        
         this.initializeUI();
         this.checkWebGPUSupport();
     }
@@ -25,6 +33,9 @@ class WebGPUMemoryBenchmark {
         this.bufferCountElement = document.getElementById('buffer-count');
         this.textureCountElement = document.getElementById('texture-count');
         this.allocationRateElement = document.getElementById('allocation-rate');
+
+        // Get canvas for rendering
+        this.canvas = document.getElementById('render-canvas');
 
         this.startButton.addEventListener('click', () => this.startMemoryTest());
         this.stressButton.addEventListener('click', () => this.startStressTest());
@@ -51,9 +62,15 @@ class WebGPUMemoryBenchmark {
 
             this.device = await this.adapter.requestDevice();
             
+            // Initialize rendering context
+            await this.initializeRendering();
+            
             // Log device limits
             const limits = this.adapter.limits;
             this.log('✅ WebGPU initialized successfully', 'success');
+            this.log(`🎨 Rendering system ready`, 'success');
+            this.log(`👀 VISUAL PROOF: You will see a GRID of noise textures proving real memory usage!`, 'success');
+            this.log(`📊 COUNT THE GRID CELLS: Each cell = one allocated texture in memory!`, 'success');
             this.log(`📊 Device Limits:`, 'info');
             this.log(`   Max Buffer Size: ${this.formatBytes(limits.maxBufferSize)}`, 'info');
             this.log(`   Max Storage Buffer Binding Size: ${this.formatBytes(limits.maxStorageBufferBindingSize)}`, 'info');
@@ -92,6 +109,228 @@ class WebGPUMemoryBenchmark {
         }
     }
 
+    async initializeRendering() {
+        try {
+            // Get WebGPU context from canvas
+            this.context = this.canvas.getContext('webgpu');
+            if (!this.context) {
+                throw new Error('Failed to get WebGPU context from canvas');
+            }
+
+            // Configure the canvas
+            const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+            this.context.configure({
+                device: this.device,
+                format: canvasFormat,
+                alphaMode: 'premultiplied',
+            });
+
+            // Create sampler for texture rendering
+            this.sampler = this.device.createSampler({
+                magFilter: 'linear',
+                minFilter: 'linear',
+            });
+
+            // Create render pipeline for displaying textures
+            const shaderModule = this.device.createShaderModule({
+                code: `
+                    struct VertexOutput {
+                        @builtin(position) position: vec4<f32>,
+                        @location(0) texCoord: vec2<f32>,
+                    }
+
+                    @vertex
+                    fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+                        var pos = array<vec2<f32>, 6>(
+                            vec2<f32>(-1.0, -1.0), // bottom left
+                            vec2<f32>( 1.0, -1.0), // bottom right
+                            vec2<f32>(-1.0,  1.0), // top left
+                            vec2<f32>( 1.0, -1.0), // bottom right
+                            vec2<f32>( 1.0,  1.0), // top right
+                            vec2<f32>(-1.0,  1.0)  // top left
+                        );
+                        
+                        var texCoord = array<vec2<f32>, 6>(
+                            vec2<f32>(0.0, 1.0), // bottom left
+                            vec2<f32>(1.0, 1.0), // bottom right
+                            vec2<f32>(0.0, 0.0), // top left
+                            vec2<f32>(1.0, 1.0), // bottom right
+                            vec2<f32>(1.0, 0.0), // top right
+                            vec2<f32>(0.0, 0.0)  // top left
+                        );
+
+                        var output: VertexOutput;
+                        output.position = vec4<f32>(pos[vertexIndex], 0.0, 1.0);
+                        output.texCoord = texCoord[vertexIndex];
+                        return output;
+                    }
+
+                    @group(0) @binding(0) var textureSampler: sampler;
+                    @group(0) @binding(1) var textureData: texture_2d<f32>;
+
+                    @fragment
+                    fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+                        return textureSample(textureData, textureSampler, input.texCoord);
+                    }
+                `
+            });
+
+            this.renderPipeline = this.device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: shaderModule,
+                    entryPoint: 'vs_main',
+                },
+                fragment: {
+                    module: shaderModule,
+                    entryPoint: 'fs_main',
+                    targets: [{
+                        format: canvasFormat,
+                    }],
+                },
+                primitive: {
+                    topology: 'triangle-list',
+                },
+            });
+
+            this.log('🎨 Rendering pipeline created successfully', 'success');
+
+        } catch (error) {
+            this.log(`❌ Failed to initialize rendering: ${error.message}`, 'error');
+            throw error;
+        }
+    }
+
+    startTextureDisplay() {
+        // Render all textures in a grid layout to prove memory usage
+        if (this.renderInterval) {
+            clearInterval(this.renderInterval);
+        }
+        
+        this.renderInterval = setInterval(() => {
+            if (this.textures.length > 0) {
+                this.renderTextureGrid();
+            }
+        }, 100); // Update frequently to show live allocation
+    }
+
+    stopTextureDisplay() {
+        if (this.renderInterval) {
+            clearInterval(this.renderInterval);
+            this.renderInterval = null;
+        }
+    }
+
+    async renderTextureGrid() {
+        if (!this.renderPipeline || !this.context || this.textures.length === 0) {
+            return;
+        }
+
+        try {
+            // Calculate grid dimensions
+            const textureCount = this.textures.length;
+            const gridSize = Math.ceil(Math.sqrt(textureCount));
+            const cellSize = 1.0 / gridSize; // Normalized coordinates
+
+            // Start render pass
+            const commandEncoder = this.device.createCommandEncoder();
+            const renderPass = commandEncoder.beginRenderPass({
+                colorAttachments: [{
+                    view: this.context.getCurrentTexture().createView(),
+                    clearValue: { r: 0.1, g: 0.1, b: 0.3, a: 1.0 },
+                    loadOp: 'clear',
+                    storeOp: 'store',
+                }],
+            });
+
+            renderPass.setPipeline(this.renderPipeline);
+
+            // Render each texture in its grid position
+            for (let i = 0; i < Math.min(textureCount, gridSize * gridSize); i++) {
+                const texture = this.textures[i];
+                if (!texture) continue;
+
+                const row = Math.floor(i / gridSize);
+                const col = i % gridSize;
+
+                // Create bind group for this texture
+                const bindGroup = this.device.createBindGroup({
+                    layout: this.renderPipeline.getBindGroupLayout(0),
+                    entries: [
+                        {
+                            binding: 0,
+                            resource: this.sampler,
+                        },
+                        {
+                            binding: 1,
+                            resource: texture.createView(),
+                        },
+                    ],
+                });
+
+                // Set up viewport for this cell
+                const x = col * (this.canvas.width / gridSize);
+                const y = row * (this.canvas.height / gridSize);
+                const width = this.canvas.width / gridSize;
+                const height = this.canvas.height / gridSize;
+
+                renderPass.setViewport(x, y, width, height, 0.0, 1.0);
+                renderPass.setBindGroup(0, bindGroup);
+                renderPass.draw(6); // 6 vertices for 2 triangles (quad)
+            }
+
+            renderPass.end();
+            this.device.queue.submit([commandEncoder.finish()]);
+
+        } catch (error) {
+            this.log(`⚠️ Failed to render texture grid: ${error.message}`, 'warning');
+        }
+    }
+
+    async renderTexture(texture) {
+        if (!texture || !this.renderPipeline || !this.context) {
+            return;
+        }
+
+        try {
+            // Create bind group for this texture
+            const bindGroup = this.device.createBindGroup({
+                layout: this.renderPipeline.getBindGroupLayout(0),
+                entries: [
+                    {
+                        binding: 0,
+                        resource: this.sampler,
+                    },
+                    {
+                        binding: 1,
+                        resource: texture.createView(),
+                    },
+                ],
+            });
+
+            // Start render pass
+            const commandEncoder = this.device.createCommandEncoder();
+            const renderPass = commandEncoder.beginRenderPass({
+                colorAttachments: [{
+                    view: this.context.getCurrentTexture().createView(),
+                    clearValue: { r: 0.0, g: 0.0, b: 0.2, a: 1.0 },
+                    loadOp: 'clear',
+                    storeOp: 'store',
+                }],
+            });
+
+            renderPass.setPipeline(this.renderPipeline);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.draw(6); // 6 vertices for 2 triangles (quad)
+            renderPass.end();
+
+            this.device.queue.submit([commandEncoder.finish()]);
+
+        } catch (error) {
+            this.log(`⚠️ Failed to render texture: ${error.message}`, 'warning');
+        }
+    }
+
     async startMemoryTest() {
         if (this.isRunning) return;
         
@@ -102,24 +341,45 @@ class WebGPUMemoryBenchmark {
         this.stressButton.disabled = true;
         
         this.log('🚀 Starting gradual memory allocation test...', 'info');
+        this.log('🎨 Visual texture display will start after first texture allocation', 'info');
         
         try {
             let allocationSize = 1024 * 1024; // Start with 1MB
             
             while (this.isRunning) {
                 await this.allocateBuffer(allocationSize);
-                await this.allocateTexture(512, 512); // 512x512 RGBA texture
+                
+                // Gradually increase texture sizes for more memory pressure
+                let textureSize = 512;
+                if (this.textures.length > 5) textureSize = 1024;
+                if (this.textures.length > 15) textureSize = 2048;
+                if (this.textures.length > 25) textureSize = 4096; // Very large textures!
+                
+                await this.allocateTexture(textureSize, textureSize); // Square RGBA texture
+                
+                // Start texture display after first texture
+                if (this.textures.length === 1) {
+                    this.startTextureDisplay();
+                    this.log('🎨 Started GRID display - you should see ALL textures in a grid!', 'success');
+                    this.log('📊 Each cell = one allocated texture. More cells = more memory!', 'success');
+                }
                 
                 // Gradually increase allocation size
                 if (this.buffers.length % 10 === 0) {
                     allocationSize = Math.min(allocationSize * 1.1, 64 * 1024 * 1024); // Cap at 64MB
                 }
                 
+                // Log grid status every 5 textures
+                if (this.textures.length % 5 === 0 && this.textures.length > 5) {
+                    const gridSize = Math.ceil(Math.sqrt(this.textures.length));
+                    this.log(`📊 Grid: ${gridSize}x${gridSize} showing ${this.textures.length} textures`, 'info');
+                }
+                
                 // Small delay to prevent blocking the UI
                 await new Promise(resolve => setTimeout(resolve, 100));
                 
                 // Check if we should continue (simple heuristic)
-                if (this.allocatedMemory > 4000 * 1024 * 1024) { // Stop at 2GB
+                if (this.allocatedMemory > 4000 * 1024 * 1024) { // Stop at 4GB
                     this.log('⚠️ Reached 4GB allocation limit, stopping test', 'warning');
                     break;
                 }
@@ -150,23 +410,37 @@ class WebGPUMemoryBenchmark {
         this.stressButton.disabled = true;
         
         this.log('💥 Starting aggressive stress test...', 'info');
+        this.log('🎨 Visual texture display will start immediately', 'info');
         
         try {
             while (this.isRunning) {
                 // Allocate multiple buffers rapidly
                 const promises = [];
-                for (let i = 0; i < 5; i++) {
-                    promises.push(this.allocateBuffer(8 * 1024 * 1024)); // 8MB each
-                    promises.push(this.allocateTexture(1024, 1024)); // 1024x1024 RGBA texture
+                for (let i = 0; i < 3; i++) {
+                    promises.push(this.allocateBuffer(16 * 1024 * 1024)); // 16MB each
+                    
+                    // Use progressively larger textures for maximum memory pressure
+                    let textureSize = 2048; // Start with 2K textures
+                    if (this.textures.length > 10) textureSize = 4096; // 4K textures
+                    if (this.textures.length > 20) textureSize = 8192; // 8K textures (256MB each!)
+                    
+                    promises.push(this.allocateTexture(textureSize, textureSize));
                 }
                 
                 await Promise.all(promises);
+                
+                // Start texture display after first batch
+                if (this.textures.length >= 1 && !this.renderInterval) {
+                    this.startTextureDisplay();
+                    this.log('🎨 Started GRID display - watch the grid fill with HUGE textures!', 'success');
+                    this.log('💥 Each grid cell = up to 256MB! Count the cells!', 'success');
+                }
                 
                 // Very short delay
                 await new Promise(resolve => setTimeout(resolve, 50));
                 
                 // Check memory threshold
-                if (this.allocatedMemory > 4000 * 1024 * 1024) { // Stop at 3GB
+                if (this.allocatedMemory > 4000 * 1024 * 1024) { // Stop at 4GB
                     this.log('⚠️ Reached 4GB allocation limit, stopping stress test', 'warning');
                     break;
                 }
@@ -239,20 +513,29 @@ class WebGPUMemoryBenchmark {
             const texture = this.device.createTexture({
                 size: [width, height, 1],
                 format: 'rgba8unorm',
-                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
             });
             
             // Force actual memory allocation by writing data to the texture
             const textureSize = width * height * 4; // RGBA = 4 bytes per pixel
             const data = new Uint8Array(textureSize);
             
-            // Fill with random data to prevent compression optimizations
-            // Texture data is already aligned (width * height * 4 bytes)
-            for (let i = 0; i < Math.min(textureSize, 1024 * 1024); i += 4) {
-                // Write RGBA pixels with random values
-                data[i] = Math.floor(Math.random() * 256);     // R
-                data[i + 1] = Math.floor(Math.random() * 256); // G
-                data[i + 2] = Math.floor(Math.random() * 256); // B
+            // Fill with HIGH CONTRAST random noise to make it visually obvious
+            for (let i = 0; i < textureSize; i += 4) {
+                // Create distinctive noise patterns
+                const noise = Math.random();
+                if (noise > 0.5) {
+                    // Bright random colors
+                    data[i] = Math.floor(Math.random() * 256);     // R
+                    data[i + 1] = Math.floor(Math.random() * 256); // G
+                    data[i + 2] = Math.floor(Math.random() * 256); // B
+                } else {
+                    // High contrast black/white noise
+                    const value = Math.random() > 0.5 ? 255 : 0;
+                    data[i] = value;     // R
+                    data[i + 1] = value; // G
+                    data[i + 2] = value; // B
+                }
                 data[i + 3] = 255; // A (full alpha)
             }
             
@@ -271,7 +554,10 @@ class WebGPUMemoryBenchmark {
             this.allocatedMemory += textureSize;
             this.updateMetrics();
             
-            this.log(`🖼️ Allocated & filled texture: ${width}x${height} (${this.formatBytes(textureSize)})`, 'info');
+            this.log(`🖼️ Allocated texture #${this.textures.length}: ${width}x${height} (${this.formatBytes(textureSize)})`, 'info');
+            if (this.textures.length <= 5) {
+                this.log(`📊 Grid now shows ${this.textures.length} texture(s) - watch it grow!`, 'info');
+            }
             
             return texture;
         } catch (error) {
@@ -284,6 +570,9 @@ class WebGPUMemoryBenchmark {
 
     clearMemory() {
         this.log('🧹 Clearing all allocated memory...', 'info');
+        
+        // Stop texture display
+        this.stopTextureDisplay();
         
         // Destroy all buffers
         this.buffers.forEach(buffer => {
@@ -306,9 +595,26 @@ class WebGPUMemoryBenchmark {
         this.buffers = [];
         this.textures = [];
         this.allocatedMemory = 0;
+        this.currentTextureIndex = 0;
         
         this.updateMetrics();
         this.log('✅ Memory cleared successfully', 'success');
+        this.log('🎨 Grid display stopped - canvas cleared', 'info');
+        
+        // Clear the canvas
+        if (this.context) {
+            const commandEncoder = this.device.createCommandEncoder();
+            const renderPass = commandEncoder.beginRenderPass({
+                colorAttachments: [{
+                    view: this.context.getCurrentTexture().createView(),
+                    clearValue: { r: 0.0, g: 0.0, b: 0.2, a: 1.0 },
+                    loadOp: 'clear',
+                    storeOp: 'store',
+                }],
+            });
+            renderPass.end();
+            this.device.queue.submit([commandEncoder.finish()]);
+        }
     }
 
     stopTest() {
@@ -316,10 +622,18 @@ class WebGPUMemoryBenchmark {
         this.startButton.disabled = false;
         this.stressButton.disabled = false;
         
+        // Stop texture display but keep textures allocated for inspection
+        this.stopTextureDisplay();
+        
         const duration = (Date.now() - this.startTime) / 1000;
         this.log(`⏱️ Test completed in ${duration.toFixed(2)} seconds`, 'info');
         this.log(`📈 Final allocation: ${this.formatBytes(this.allocatedMemory)}`, 'info');
         this.log(`📊 Total buffers: ${this.buffers.length}, Total textures: ${this.textures.length}`, 'info');
+        this.log(`🎨 Grid display paused - all textures remain in memory`, 'info');
+        
+        if (this.textures.length > 0) {
+            this.log(`💡 Grid showed ${this.textures.length} textures. Use "Clear Memory" to free them.`, 'info');
+        }
     }
 
     updateMetrics() {
