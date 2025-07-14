@@ -1,0 +1,23 @@
+{
+  "name": "webgpu-memory-benchmark",
+  "version": "1.0.0",
+  "description": "A benchmark tool to test WebGPU memory limits in browsers, especially iOS Safari",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "webgpu",
+    "benchmark",
+    "memory",
+    "ios",
+    "safari"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+} 
