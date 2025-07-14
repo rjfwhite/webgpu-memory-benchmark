@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebGPU Memory Benchmark</title>
+    <title>WebGPU & WebGL2 Memory Benchmark</title>
     <style>
         * {
             margin: 0;
@@ -43,6 +43,42 @@
             font-size: 1.1em;
         }
 
+        .api-selection {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .api-option {
+            background: rgba(255, 255, 255, 0.1);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            user-select: none;
+        }
+
+        .api-option:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .api-option.active {
+            background: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.6);
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+        }
+
+        .api-option.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         .status {
             background: rgba(255, 255, 255, 0.2);
             border-radius: 10px;
@@ -71,7 +107,7 @@
             transition: all 0.3s ease;
         }
 
-        button:hover {
+        button:hover:not(:disabled) {
             background: rgba(255, 255, 255, 0.3);
             transform: translateY(-2px);
         }
@@ -177,7 +213,7 @@
                 flex-direction: column;
             }
             
-            button {
+            button, .api-option {
                 width: 100%;
             }
 
@@ -197,11 +233,16 @@
 </head>
 <body>
     <div class="container">
-        <h1>WebGPU Memory Benchmark</h1>
-        <p class="subtitle">Test WebGPU memory limits with visual proof</p>
+        <h1>WebGPU & WebGL2 Memory Benchmark</h1>
+        <p class="subtitle">Test memory limits with visual proof across graphics APIs</p>
+        
+        <div class="api-selection">
+            <div class="api-option active" data-api="webgpu">🚀 WebGPU</div>
+            <div class="api-option" data-api="webgl2">🎮 WebGL2</div>
+        </div>
         
         <div id="status" class="status">
-            <div id="webgpu-status">Checking WebGPU support...</div>
+            <div id="api-status">Checking API support...</div>
         </div>
 
         <div class="controls">
@@ -232,7 +273,7 @@
 
         <div class="main-content">
             <div class="render-section">
-                <div class="render-title">🎨 Texture Rendering Proof</div>
+                <div class="render-title" id="render-title">🎨 Texture Rendering Proof</div>
                 <canvas id="render-canvas" width="512" height="400"></canvas>
             </div>
             <div class="log" id="log"></div>
