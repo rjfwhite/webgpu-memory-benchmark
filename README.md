@@ -2,6 +2,8 @@
 
 A comprehensive benchmark tool to test WebGPU memory allocation limits in browsers, specifically designed to discover the hidden memory limits in iOS Safari.
 
+https://webgpu-memory-benchmark.vercel.app/
+
 ## 🎯 Purpose
 
 iOS Safari has undocumented memory limits for WebGPU that can cause tabs to be killed when exceeded. This benchmark helps you:
