@@ -366,7 +366,7 @@ class WebGPUMemoryBenchmark {
                 
                 // Gradually increase allocation size
                 if (this.buffers.length % 10 === 0) {
-                    allocationSize = Math.min(allocationSize * 1.1, 64 * 1024 * 1024); // Cap at 64MB
+                    allocationSize = Math.min(allocationSize * 1.1, 256 * 1024 * 1024); // Cap at 256MB
                 }
                 
                 // Log grid status every 5 textures
@@ -379,8 +379,8 @@ class WebGPUMemoryBenchmark {
                 await new Promise(resolve => setTimeout(resolve, 100));
                 
                 // Check if we should continue (simple heuristic)
-                if (this.allocatedMemory > 4000 * 1024 * 1024) { // Stop at 4GB
-                    this.log('⚠️ Reached 4GB allocation limit, stopping test', 'warning');
+                if (this.allocatedMemory > 16000 * 1024 * 1024) { // Stop at 16GB
+                    this.log('⚠️ Reached 16GB allocation limit, stopping test', 'warning');
                     break;
                 }
             }
@@ -440,8 +440,8 @@ class WebGPUMemoryBenchmark {
                 await new Promise(resolve => setTimeout(resolve, 50));
                 
                 // Check memory threshold
-                if (this.allocatedMemory > 4000 * 1024 * 1024) { // Stop at 4GB
-                    this.log('⚠️ Reached 4GB allocation limit, stopping stress test', 'warning');
+                if (this.allocatedMemory > 16000 * 1024 * 1024) { // Stop at 16GB
+                    this.log('⚠️ Reached 16GB allocation limit, stopping stress test', 'warning');
                     break;
                 }
             }
